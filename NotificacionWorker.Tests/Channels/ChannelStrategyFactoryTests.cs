@@ -1,12 +1,29 @@
 using Xunit;
 using Moq;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using NotificacionWorker.Channels;
+using NotificacionWorker.Configuration;
 
 namespace NotificacionWorker.Tests.Channels;
 
 public class ChannelStrategyFactoryTests
 {
+    private static IOptions<ChannelRoutingSettings> CreateRoutingOptions()
+    {
+        var settings = new ChannelRoutingSettings
+        {
+            EventChannelMappings = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["ordencompletada"] = ["Email", "Push"],
+                ["alertainiciosesion"] = ["Push", "Email"],
+                ["promocionmundialfutbol"] = ["SMS"]
+            }
+        };
+
+        return Options.Create(settings);
+    }
+
     [Fact]
     public void GetStrategy_WithValidChannelName_ReturnsCorrectStrategy()
     {
@@ -23,7 +40,7 @@ public class ChannelStrategyFactoryTests
             mockSmsStrategy.Object
         };
 
-        var factory = new ChannelStrategyFactory(mockLogger.Object, strategies);
+        var factory = new ChannelStrategyFactory(mockLogger.Object, strategies, CreateRoutingOptions());
 
         var result = factory.GetStrategy("Email");
 
@@ -39,7 +56,7 @@ public class ChannelStrategyFactoryTests
         mockEmailStrategy.Setup(s => s.ChannelName).Returns("Email");
 
         var strategies = new List<IChannelStrategy> { mockEmailStrategy.Object };
-        var factory = new ChannelStrategyFactory(mockLogger.Object, strategies);
+        var factory = new ChannelStrategyFactory(mockLogger.Object, strategies, CreateRoutingOptions());
 
         var result = factory.GetStrategy("email");
 
@@ -52,7 +69,7 @@ public class ChannelStrategyFactoryTests
     {
         var mockLogger = new Mock<ILogger<ChannelStrategyFactory>>();
         var strategies = new List<IChannelStrategy>();
-        var factory = new ChannelStrategyFactory(mockLogger.Object, strategies);
+        var factory = new ChannelStrategyFactory(mockLogger.Object, strategies, CreateRoutingOptions());
 
         var result = factory.GetStrategy("CanalInexistente");
 
@@ -80,7 +97,7 @@ public class ChannelStrategyFactoryTests
             mockSmsStrategy.Object
         };
 
-        var factory = new ChannelStrategyFactory(mockLogger.Object, strategies);
+        var factory = new ChannelStrategyFactory(mockLogger.Object, strategies, CreateRoutingOptions());
 
         var result = factory.GetStrategiesForEvent("ordencompletada").ToList();
 
@@ -91,7 +108,7 @@ public class ChannelStrategyFactoryTests
     }
 
     [Fact]
-    public void GetStrategiesForEvent_AlertaInicioSesion_ReturnsOnlyPush()
+    public void GetStrategiesForEvent_AlertaInicioSesion_ReturnsPushAndEmail()
     {
         var mockLogger = new Mock<ILogger<ChannelStrategyFactory>>();
         
@@ -107,12 +124,13 @@ public class ChannelStrategyFactoryTests
             mockPushStrategy.Object
         };
 
-        var factory = new ChannelStrategyFactory(mockLogger.Object, strategies);
+        var factory = new ChannelStrategyFactory(mockLogger.Object, strategies, CreateRoutingOptions());
 
         var result = factory.GetStrategiesForEvent("alertainiciosesion").ToList();
 
-        Assert.Single(result);
-        Assert.Equal("Push", result[0].ChannelName);
+        Assert.Equal(2, result.Count);
+        Assert.Contains(result, s => s.ChannelName == "Push");
+        Assert.Contains(result, s => s.ChannelName == "Email");
     }
 
     [Fact]
@@ -120,7 +138,7 @@ public class ChannelStrategyFactoryTests
     {
         var mockLogger = new Mock<ILogger<ChannelStrategyFactory>>();
         var strategies = new List<IChannelStrategy>();
-        var factory = new ChannelStrategyFactory(mockLogger.Object, strategies);
+        var factory = new ChannelStrategyFactory(mockLogger.Object, strategies, CreateRoutingOptions());
 
         var result = factory.GetStrategiesForEvent("eventodesconocido");
 

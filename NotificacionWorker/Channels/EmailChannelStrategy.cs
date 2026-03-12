@@ -2,6 +2,7 @@ using Confluent.Kafka;
 using Microsoft.Extensions.Options;
 using NotificacionWorker.Configuration;
 using NotificacionWorker.Models;
+using NotificacionWorker.Services;
 using System.Text.Json;
 
 namespace NotificacionWorker.Channels;
@@ -10,6 +11,7 @@ public class EmailChannelStrategy : IChannelStrategy
 {
     private readonly ILogger<EmailChannelStrategy> _logger;
     private readonly IProducer<string, string> _producer;
+    private readonly IEmailTemplateRenderer _templateRenderer;
     private readonly string _topic;
 
     public string ChannelName => "Email";
@@ -17,10 +19,12 @@ public class EmailChannelStrategy : IChannelStrategy
     public EmailChannelStrategy(
         ILogger<EmailChannelStrategy> logger,
         IProducer<string, string> producer,
+        IEmailTemplateRenderer templateRenderer,
         IOptions<KafkaSettings> kafkaSettings)
     {
         _logger = logger;
         _producer = producer;
+        _templateRenderer = templateRenderer;
         _topic = kafkaSettings.Value.Topics.NotificationEmail;
     }
 
@@ -32,7 +36,7 @@ public class EmailChannelStrategy : IChannelStrategy
             {
                 EventType = request.EventType,
                 Subject = $"[Email] {request.EventType}",
-                Body = JsonSerializer.Serialize(request.Data),
+                Body = await _templateRenderer.RenderAsync(request.EventType, request.Data, cancellationToken),
                 Metadata = request.Data,
                 Timestamp = request.Timestamp
             };

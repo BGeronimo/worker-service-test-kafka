@@ -1,3 +1,6 @@
+using Microsoft.Extensions.Options;
+using NotificacionWorker.Configuration;
+
 namespace NotificacionWorker.Channels;
 
 public class ChannelStrategyFactory : IChannelStrategyFactory
@@ -8,17 +11,14 @@ public class ChannelStrategyFactory : IChannelStrategyFactory
 
     public ChannelStrategyFactory(
         ILogger<ChannelStrategyFactory> logger,
-        IEnumerable<IChannelStrategy> strategies)
+        IEnumerable<IChannelStrategy> strategies,
+        IOptions<ChannelRoutingSettings> channelRoutingOptions)
     {
         _logger = logger;
         _strategies = strategies;
 
-        _eventChannelMappings = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
-        {
-            { "ordencompletada", new List<string> { "Email", "Push" } },
-            { "alertainiciosesion", new List<string> { "Push" } },
-            { "promocionmundialfutbol", new List<string> { "SMS" } }
-        };
+        var configuredMappings = channelRoutingOptions.Value.EventChannelMappings ?? new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        _eventChannelMappings = new Dictionary<string, List<string>>(configuredMappings, StringComparer.OrdinalIgnoreCase);
     }
 
     public IChannelStrategy? GetStrategy(string channelName)
