@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="InventarioWorker/InventarioWorker.csproj" Id="c53c5734-6020-46fd-a5b8-f21faf1e4cf7" />
+  <Project Path="NotificacionWorker/NotificacionWorker.csproj" />
+</Solution>
