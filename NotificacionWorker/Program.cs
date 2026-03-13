@@ -10,6 +10,7 @@ var builder = Host.CreateApplicationBuilder(args);
 builder.Services.Configure<KafkaSettings>(builder.Configuration.GetSection("Kafka"));
 builder.Services.Configure<ChannelRoutingSettings>(builder.Configuration.GetSection("ChannelRouting"));
 builder.Services.Configure<EmailTemplateSettings>(builder.Configuration.GetSection("EmailTemplates"));
+builder.Services.Configure<PushRoutingSettings>(builder.Configuration.GetSection("PushRouting"));
 
 builder.Services.AddSingleton<IProducer<string, string>>(sp =>
 {
@@ -27,6 +28,7 @@ builder.Services.AddTransient<IChannelStrategy, PushChannelStrategy>();
 
 builder.Services.AddSingleton<IChannelStrategyFactory, ChannelStrategyFactory>();
 builder.Services.AddSingleton<IEmailTemplateRenderer, FileEmailTemplateRenderer>();
+builder.Services.AddSingleton<IPushAppResolver, PushAppResolver>();
 
 builder.Services.AddSingleton<INotificationOrchestrator, NotificationOrchestrator>();
 

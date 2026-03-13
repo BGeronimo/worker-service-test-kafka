@@ -99,14 +99,38 @@ public class PushWorker : BackgroundService
     {
         await Task.Delay(200);
 
+        var appId = ReadMetadataValue(notification.Metadata, "pushAppId");
+        var credentialsSource = ReadMetadataValue(notification.Metadata, "pushCredentialsSource");
+        var credentialsLocation = ReadMetadataValue(notification.Metadata, "pushCredentialsLocation");
+        var credentialsSummary = ReadMetadataValue(notification.Metadata, "pushCredentialsSummary");
+
         _logger.LogInformation("-------------------------------------------");
         _logger.LogInformation("[PUSH NOTIFICATION SIMULADO]");
         _logger.LogInformation("DeviceId: {To}", notification.To ?? "device-abc-123");
         _logger.LogInformation("Titulo: {Subject}", notification.Subject);
         _logger.LogInformation("Mensaje: {Body}", notification.Body);
+        _logger.LogInformation("Firebase AppId: {AppId}", string.IsNullOrWhiteSpace(appId) ? "N/A" : appId);
+        _logger.LogInformation("Credentials Source: {Source}", string.IsNullOrWhiteSpace(credentialsSource) ? "N/A" : credentialsSource);
+        _logger.LogInformation("Credentials Location: {Location}", string.IsNullOrWhiteSpace(credentialsLocation) ? "N/A" : credentialsLocation);
+        _logger.LogInformation("Credentials Summary: {Summary}", string.IsNullOrWhiteSpace(credentialsSummary) ? "N/A" : credentialsSummary);
         _logger.LogInformation("EventType: {EventType}", notification.EventType);
         _logger.LogInformation("Timestamp: {Timestamp}", notification.Timestamp);
         _logger.LogInformation("-------------------------------------------");
+    }
+
+    private static string ReadMetadataValue(Dictionary<string, object> metadata, string key)
+    {
+        if (!metadata.TryGetValue(key, out var rawValue) || rawValue is null)
+        {
+            return string.Empty;
+        }
+
+        return rawValue switch
+        {
+            JsonElement jsonElement when jsonElement.ValueKind == JsonValueKind.String => jsonElement.GetString() ?? string.Empty,
+            JsonElement jsonElement => jsonElement.GetRawText(),
+            _ => rawValue.ToString() ?? string.Empty
+        };
     }
 
     public override void Dispose()
