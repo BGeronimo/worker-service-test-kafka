@@ -53,9 +53,9 @@ public class NotificationOrchestratorTests
     }
 
     [Fact]
-    public async Task RouteNotificationAsync_WithNullRequest_LogsWarningAndReturns()
+    public async Task RouteNotificationAsync_WithNullRequest_ThrowsArgumentNullException()
     {
-        await _orchestrator.RouteNotificationAsync(null!);
+        await Assert.ThrowsAsync<ArgumentNullException>(() => _orchestrator.RouteNotificationAsync(null!));
 
         _mockLogger.Verify(
             x => x.Log(
@@ -70,7 +70,7 @@ public class NotificationOrchestratorTests
     }
 
     [Fact]
-    public async Task RouteNotificationAsync_WithNoStrategiesAvailable_LogsWarning()
+    public async Task RouteNotificationAsync_WithNoStrategiesAvailable_ThrowsInvalidOperationException()
     {
         var request = new NotificationRequest
         {
@@ -83,7 +83,7 @@ public class NotificationOrchestratorTests
             .Setup(f => f.GetStrategiesForEvent("eventotestdesconocido"))
             .Returns(Enumerable.Empty<IChannelStrategy>());
 
-        await _orchestrator.RouteNotificationAsync(request);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _orchestrator.RouteNotificationAsync(request));
 
         _mockLogger.Verify(
             x => x.Log(
@@ -96,7 +96,7 @@ public class NotificationOrchestratorTests
     }
 
     [Fact]
-    public async Task RouteNotificationAsync_WhenStrategyFails_ContinuesWithOtherStrategies()
+    public async Task RouteNotificationAsync_WhenStrategyFails_ContinuesWithOtherStrategiesAndThrowsAggregateException()
     {
         var request = new NotificationRequest
         {
@@ -121,7 +121,7 @@ public class NotificationOrchestratorTests
             .Setup(f => f.GetStrategiesForEvent("ordencompletada"))
             .Returns(strategies);
 
-        await _orchestrator.RouteNotificationAsync(request);
+        await Assert.ThrowsAsync<AggregateException>(() => _orchestrator.RouteNotificationAsync(request));
 
         mockEmailStrategy.Verify(s => s.ProcessAndPublishAsync(request, It.IsAny<CancellationToken>()), Times.Once);
         mockPushStrategy.Verify(s => s.ProcessAndPublishAsync(request, It.IsAny<CancellationToken>()), Times.Once);

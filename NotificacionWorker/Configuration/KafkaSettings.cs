@@ -5,6 +5,14 @@ public class KafkaSettings
     public string BootstrapServers { get; set; } = "localhost:9092";
     public string GroupId { get; set; } = "notification-worker-group";
     public Topics Topics { get; set; } = new();
+    public RetryPolicySettings RetryPolicy { get; set; } = new();
+}
+
+public class RetryPolicySettings
+{
+    public int MaxProcessingAttempts { get; set; } = 3;
+    public int MaxDlqPublishAttempts { get; set; } = 3;
+    public int BackoffMilliseconds { get; set; } = 500;
 }
 
 public class Topics

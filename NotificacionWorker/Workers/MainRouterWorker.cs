@@ -14,6 +14,9 @@ public class MainRouterWorker : BackgroundService
     private readonly IConsumer<string, string> _consumer;
     private readonly INotificationOrchestrator _orchestrator;
     private readonly IProducer<string, string> _producer;
+    private readonly int _maxProcessingAttempts;
+    private readonly int _maxDlqPublishAttempts;
+    private readonly TimeSpan _retryBackoff;
 
     public MainRouterWorker(
         ILogger<MainRouterWorker> logger,
@@ -25,6 +28,9 @@ public class MainRouterWorker : BackgroundService
         _kafkaSettings = kafkaSettings.Value;
         _orchestrator = orchestrator;
         _producer = producer;
+        _maxProcessingAttempts = Math.Clamp(_kafkaSettings.RetryPolicy.MaxProcessingAttempts, 1, 10);
+        _maxDlqPublishAttempts = Math.Clamp(_kafkaSettings.RetryPolicy.MaxDlqPublishAttempts, 1, 10);
+        _retryBackoff = TimeSpan.FromMilliseconds(Math.Clamp(_kafkaSettings.RetryPolicy.BackoffMilliseconds, 100, 30000));
 
         var consumerConfig = new ConsumerConfig
         {
@@ -55,7 +61,7 @@ public class MainRouterWorker : BackgroundService
 
                     _logger.LogInformation("Mensaje recibido de {Topic}", consumeResult.Topic);
 
-                    var processed = await ProcessAndRouteMessage(consumeResult.Message.Value, stoppingToken);
+                    var processed = await ProcessAndRouteMessageWithRetryAsync(consumeResult.Message.Value, stoppingToken);
 
                     if (processed)
                     {
@@ -63,7 +69,7 @@ public class MainRouterWorker : BackgroundService
                         continue;
                     }
 
-                    var movedToDlq = await PublishToDlqAsync(consumeResult, stoppingToken);
+                    var movedToDlq = await PublishToDlqWithRetryAsync(consumeResult, stoppingToken);
                     if (movedToDlq)
                     {
                         _consumer.Commit(consumeResult);
@@ -89,6 +95,47 @@ public class MainRouterWorker : BackgroundService
         {
             _consumer.Close();
         }
+    }
+
+    private async Task<bool> ProcessAndRouteMessageWithRetryAsync(string messageValue, CancellationToken cancellationToken)
+    {
+        for (var attempt = 1; attempt <= _maxProcessingAttempts; attempt++)
+        {
+            var processed = await ProcessAndRouteMessage(messageValue, cancellationToken);
+            if (processed)
+            {
+                return true;
+            }
+
+            if (attempt < _maxProcessingAttempts)
+            {
+                _logger.LogWarning("[ROUTER] Reintento {Attempt}/{MaxAttempts} de procesamiento", attempt + 1, _maxProcessingAttempts);
+                await Task.Delay(_retryBackoff, cancellationToken);
+            }
+        }
+
+        return false;
+    }
+
+    private async Task<bool> PublishToDlqWithRetryAsync(ConsumeResult<string, string> consumeResult, CancellationToken cancellationToken)
+    {
+        for (var attempt = 1; attempt <= _maxDlqPublishAttempts; attempt++)
+        {
+            var movedToDlq = await PublishToDlqAsync(consumeResult, cancellationToken);
+            if (movedToDlq)
+            {
+                return true;
+            }
+
+            if (attempt < _maxDlqPublishAttempts)
+            {
+                _logger.LogWarning("[ROUTER] Reintento {Attempt}/{MaxAttempts} para publicar en DLQ", attempt + 1, _maxDlqPublishAttempts);
+                await Task.Delay(_retryBackoff, cancellationToken);
+            }
+        }
+
+        _logger.LogError("[ROUTER] Se agotaron {MaxAttempts} intentos para publicar en DLQ. El offset no se commiteará y se reintentará en el siguiente ciclo.", _maxDlqPublishAttempts);
+        return false;
     }
 
     private async Task<bool> ProcessAndRouteMessage(string messageValue, CancellationToken stoppingToken)

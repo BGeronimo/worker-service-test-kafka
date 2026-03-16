@@ -1,5 +1,6 @@
 using NotificacionWorker.Channels;
 using NotificacionWorker.Models;
+using System.Collections.Concurrent;
 
 namespace NotificacionWorker.Services;
 
@@ -21,18 +22,20 @@ public class NotificationOrchestrator : INotificationOrchestrator
         if (request == null)
         {
             _logger.LogWarning("NotificationRequest es null, no se puede procesar");
-            return;
+            throw new ArgumentNullException(nameof(request));
         }
 
         _logger.LogInformation("Orquestando notificación para evento: {EventType}", request.EventType);
 
-        var strategies = _channelFactory.GetStrategiesForEvent(request.EventType);
+        var strategies = _channelFactory.GetStrategiesForEvent(request.EventType).ToList();
 
-        if (!strategies.Any())
+        if (strategies.Count == 0)
         {
             _logger.LogWarning("No hay canales configurados para el evento: {EventType}", request.EventType);
-            return;
+            throw new InvalidOperationException($"No hay canales configurados para el evento: {request.EventType}");
         }
+
+        var processingErrors = new ConcurrentQueue<Exception>();
 
         var tasks = strategies.Select(async strategy =>
         {
@@ -41,13 +44,25 @@ public class NotificationOrchestrator : INotificationOrchestrator
                 await strategy.ProcessAndPublishAsync(request, cancellationToken);
                 _logger.LogInformation("Notificación enviada exitosamente al canal: {Channel}", strategy.ChannelName);
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error enviando notificación al canal: {Channel}", strategy.ChannelName);
+                processingErrors.Enqueue(new InvalidOperationException(
+                    $"Falló el canal {strategy.ChannelName} para evento {request.EventType}",
+                    ex));
             }
         });
 
         await Task.WhenAll(tasks);
+
+        if (!processingErrors.IsEmpty)
+        {
+            throw new AggregateException("La notificación falló en uno o más canales", processingErrors);
+        }
 
         _logger.LogInformation("Orquestación completada para evento: {EventType}", request.EventType);
     }
