@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Options;
 using NotificacionWorker.Configuration;
+using System.Collections.Concurrent;
 using System.Net;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -11,6 +12,9 @@ public partial class FileEmailTemplateRenderer : IEmailTemplateRenderer
     private readonly ILogger<FileEmailTemplateRenderer> _logger;
     private readonly IHostEnvironment _hostEnvironment;
     private readonly EmailTemplateSettings _settings;
+    private readonly TimeSpan _cacheExpiration;
+    private readonly ConcurrentDictionary<string, CachedTemplate> _templateCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _templateLocks = new(StringComparer.OrdinalIgnoreCase);
 
     public FileEmailTemplateRenderer(
         ILogger<FileEmailTemplateRenderer> logger,
@@ -20,6 +24,7 @@ public partial class FileEmailTemplateRenderer : IEmailTemplateRenderer
         _logger = logger;
         _hostEnvironment = hostEnvironment;
         _settings = options.Value;
+        _cacheExpiration = TimeSpan.FromMinutes(Math.Clamp(_settings.CacheExpirationMinutes, 1, 60));
     }
 
     public async Task<string> RenderAsync(string eventType, Dictionary<string, object> data, CancellationToken cancellationToken = default)
@@ -30,14 +35,52 @@ public partial class FileEmailTemplateRenderer : IEmailTemplateRenderer
             _settings.TemplatesRootPath,
             EnsureTemplateFileName(templateKey));
 
-        if (!File.Exists(templatePath))
+        var template = await GetTemplateAsync(templatePath, cancellationToken);
+
+        if (template is null)
         {
             _logger.LogWarning("No se encontró template para evento {EventType} en ruta {TemplatePath}", eventType, templatePath);
             return BuildFallbackHtml(eventType, data);
         }
 
-        var template = await File.ReadAllTextAsync(templatePath, cancellationToken);
         return RenderTemplate(template, data);
+    }
+
+    private async Task<string?> GetTemplateAsync(string templatePath, CancellationToken cancellationToken)
+    {
+        var now = DateTimeOffset.UtcNow;
+
+        if (_templateCache.TryGetValue(templatePath, out var cachedTemplate) && cachedTemplate.ExpiresAtUtc > now)
+        {
+            return cachedTemplate.Content;
+        }
+
+        var templateLock = _templateLocks.GetOrAdd(templatePath, _ => new SemaphoreSlim(1, 1));
+        await templateLock.WaitAsync(cancellationToken);
+
+        try
+        {
+            now = DateTimeOffset.UtcNow;
+
+            if (_templateCache.TryGetValue(templatePath, out cachedTemplate) && cachedTemplate.ExpiresAtUtc > now)
+            {
+                return cachedTemplate.Content;
+            }
+
+            if (!File.Exists(templatePath))
+            {
+                return null;
+            }
+
+            var template = await File.ReadAllTextAsync(templatePath, cancellationToken);
+            _templateCache[templatePath] = new CachedTemplate(template, now.Add(_cacheExpiration));
+
+            return template;
+        }
+        finally
+        {
+            templateLock.Release();
+        }
     }
 
     private string ResolveTemplateKey(string eventType)
@@ -105,4 +148,6 @@ public partial class FileEmailTemplateRenderer : IEmailTemplateRenderer
 
     [GeneratedRegex("{{\\s*[^{}]+\\s*}}", RegexOptions.Compiled)]
     private static partial Regex PlaceholderRegex();
+
+    private sealed record CachedTemplate(string Content, DateTimeOffset ExpiresAtUtc);
 }
