@@ -17,7 +17,9 @@ builder.Services.AddSingleton<IProducer<string, string>>(sp =>
     var kafkaSettings = sp.GetRequiredService<IOptions<KafkaSettings>>().Value;
     var producerConfig = new ProducerConfig
     {
-        BootstrapServers = kafkaSettings.BootstrapServers
+        BootstrapServers = kafkaSettings.BootstrapServers,
+        Acks = Acks.All,
+        EnableIdempotence = true
     };
     return new ProducerBuilder<string, string>(producerConfig).Build();
 });

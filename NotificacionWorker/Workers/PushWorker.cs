@@ -11,18 +11,21 @@ public class PushWorker : BackgroundService
     private readonly ILogger<PushWorker> _logger;
     private readonly KafkaSettings _kafkaSettings;
     private readonly IConsumer<string, string> _consumer;
+    private readonly IProducer<string, string> _producer;
 
-    public PushWorker(ILogger<PushWorker> logger, IOptions<KafkaSettings> kafkaSettings)
+    public PushWorker(ILogger<PushWorker> logger, IOptions<KafkaSettings> kafkaSettings, IProducer<string, string> producer)
     {
         _logger = logger;
         _kafkaSettings = kafkaSettings.Value;
+        _producer = producer;
 
         var consumerConfig = new ConsumerConfig
         {
             BootstrapServers = _kafkaSettings.BootstrapServers,
             GroupId = $"{_kafkaSettings.GroupId}-push",
             AutoOffsetReset = AutoOffsetReset.Earliest,
-            EnableAutoCommit = false
+            EnableAutoCommit = false,
+            EnableAutoOffsetStore = false
         };
 
         _consumer = new ConsumerBuilder<string, string>(consumerConfig).Build();
@@ -41,14 +44,25 @@ public class PushWorker : BackgroundService
             {
                 try
                 {
-                    var consumeResult = _consumer.Consume(TimeSpan.FromSeconds(1));
+                    var consumeResult = _consumer.Consume(stoppingToken);
 
-                    if (consumeResult != null)
+                    var processed = await ProcessPushNotification(consumeResult.Message.Value, stoppingToken);
+
+                    if (processed)
                     {
-                        await ProcessPushNotification(consumeResult.Message.Value);
+                        _consumer.Commit(consumeResult);
+                        continue;
+                    }
 
+                    var movedToDlq = await PublishToDlqAsync(consumeResult, stoppingToken);
+                    if (movedToDlq)
+                    {
                         _consumer.Commit(consumeResult);
                     }
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
                 }
                 catch (ConsumeException ex) when (ex.Error.Code == ErrorCode.UnknownTopicOrPart)
                 {
@@ -60,8 +74,6 @@ public class PushWorker : BackgroundService
                     _logger.LogError(ex, "Error consumiendo mensaje de Kafka");
                     await Task.Delay(2000, stoppingToken);
                 }
-
-                await Task.Delay(100, stoppingToken);
             }
         }
         finally
@@ -70,7 +82,7 @@ public class PushWorker : BackgroundService
         }
     }
 
-    private async Task ProcessPushNotification(string messageValue)
+    private async Task<bool> ProcessPushNotification(string messageValue, CancellationToken cancellationToken)
     {
         try
         {
@@ -79,25 +91,74 @@ public class PushWorker : BackgroundService
             if (notification == null)
             {
                 _logger.LogWarning("No se pudo deserializar el mensaje de Push");
-                return;
+                return false;
             }
 
             _logger.LogInformation("[PUSH] Procesando - EventType: {EventType}, Subject: {Subject}", 
                 notification.EventType, notification.Subject);
 
-            await SimulatePushSending(notification);
+            await SimulatePushSending(notification, cancellationToken);
 
             _logger.LogInformation("[PUSH] Enviado exitosamente para evento: {EventType}", notification.EventType);
+            return true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error procesando notificación Push");
+            return false;
         }
     }
 
-    private async Task SimulatePushSending(NotificationMessage notification)
+    private async Task<bool> PublishToDlqAsync(ConsumeResult<string, string> consumeResult, CancellationToken cancellationToken)
     {
-        await Task.Delay(200);
+        var dlqTopic = _kafkaSettings.Topics.NotificationPushDlq;
+
+        var dlqPayload = new
+        {
+            OriginalTopic = consumeResult.Topic,
+            OriginalPartition = consumeResult.Partition.Value,
+            OriginalOffset = consumeResult.Offset.Value,
+            FailedAtUtc = DateTime.UtcNow,
+            Payload = consumeResult.Message.Value
+        };
+
+        try
+        {
+            var message = new Message<string, string>
+            {
+                Key = consumeResult.Message.Key,
+                Value = JsonSerializer.Serialize(dlqPayload)
+            };
+
+            await _producer.ProduceAsync(dlqTopic, message, cancellationToken);
+            _logger.LogWarning("[PUSH] Mensaje enviado a DLQ {DlqTopic} desde {Topic} [{Partition}:{Offset}]",
+                dlqTopic,
+                consumeResult.Topic,
+                consumeResult.Partition.Value,
+                consumeResult.Offset.Value);
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "[PUSH] No se pudo publicar en DLQ {DlqTopic} para {Topic} [{Partition}:{Offset}]. Se dejará sin commit para reintento.",
+                dlqTopic,
+                consumeResult.Topic,
+                consumeResult.Partition.Value,
+                consumeResult.Offset.Value);
+
+            return false;
+        }
+    }
+
+    private async Task SimulatePushSending(NotificationMessage notification, CancellationToken cancellationToken)
+    {
+        await Task.Delay(200, cancellationToken);
 
         var appId = ReadMetadataValue(notification.Metadata, "pushAppId");
         var credentialsSource = ReadMetadataValue(notification.Metadata, "pushCredentialsSource");
