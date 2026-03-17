@@ -39,8 +39,7 @@ public partial class FileEmailTemplateRenderer : IEmailTemplateRenderer
 
         if (template is null)
         {
-            _logger.LogWarning("No se encontró template para evento {EventType} en ruta {TemplatePath}", eventType, templatePath);
-            return BuildFallbackHtml(eventType, data);
+            throw new InvalidOperationException($"No se encontró el archivo de template para el evento '{eventType}' en la ruta '{templatePath}'.");
         }
 
         return RenderTemplate(template, data);
@@ -90,7 +89,7 @@ public partial class FileEmailTemplateRenderer : IEmailTemplateRenderer
             return configuredTemplate;
         }
 
-        return eventType;
+        throw new InvalidOperationException($"No existe un mapeo de template para el evento '{eventType}' en la configuración 'EmailTemplates:EventTemplateMappings'.");
     }
 
     private static string EnsureTemplateFileName(string templateKey)
@@ -136,14 +135,6 @@ public partial class FileEmailTemplateRenderer : IEmailTemplateRenderer
             },
             _ => Convert.ToString(value) ?? string.Empty
         };
-    }
-
-    private static string BuildFallbackHtml(string eventType, Dictionary<string, object> data)
-    {
-        var body = string.Join(Environment.NewLine, data.Select(kvp =>
-            $"<li><strong>{WebUtility.HtmlEncode(kvp.Key)}:</strong> {WebUtility.HtmlEncode(ConvertValueToString(kvp.Value))}</li>"));
-
-        return $"<html><body><h2>{WebUtility.HtmlEncode(eventType)}</h2><ul>{body}</ul></body></html>";
     }
 
     [GeneratedRegex("{{\\s*[^{}]+\\s*}}", RegexOptions.Compiled)]
