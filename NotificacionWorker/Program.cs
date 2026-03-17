@@ -7,6 +7,8 @@ using NotificacionWorker.Workers;
 
 var builder = Host.CreateApplicationBuilder(args);
 
+builder.Services.AddWindowsService(options => options.ServiceName = "NotificacionWorker");
+
 builder.Services.Configure<KafkaSettings>(builder.Configuration.GetSection("Kafka"));
 builder.Services.Configure<ChannelRoutingSettings>(builder.Configuration.GetSection("ChannelRouting"));
 builder.Services.Configure<EmailTemplateSettings>(builder.Configuration.GetSection("EmailTemplates"));
