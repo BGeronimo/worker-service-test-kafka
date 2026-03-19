@@ -4,6 +4,9 @@ namespace NotificacionWorker.Models;
 
 public class NotificationMessage
 {
+    [JsonPropertyName("eventId")]
+    public string EventId { get; set; } = string.Empty;
+
     [JsonPropertyName("to")]
     public string To { get; set; } = string.Empty;
 

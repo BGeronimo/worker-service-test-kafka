@@ -2,6 +2,8 @@
 using NotificacionWorker.Configuration;
 using NotificacionWorker.Models;
 using NotificacionWorker.Services;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Options;
 
@@ -150,7 +152,9 @@ public class MainRouterWorker : BackgroundService
                 return false;
             }
 
-            _logger.LogInformation("Procesando evento tipo: {EventType}", request.EventType);
+            request.EventId = ResolveEventId(request.EventId, messageValue);
+
+            _logger.LogInformation("Procesando evento tipo: {EventType} con EventId: {EventId}", request.EventType, request.EventId);
 
             await _orchestrator.RouteNotificationAsync(request, stoppingToken);
             return true;
@@ -169,6 +173,18 @@ public class MainRouterWorker : BackgroundService
             _logger.LogError(ex, "Error procesando mensaje");
             return false;
         }
+    }
+
+    private static string ResolveEventId(string? eventId, string messageValue)
+    {
+        if (!string.IsNullOrWhiteSpace(eventId))
+        {
+            return eventId;
+        }
+
+        var payload = Encoding.UTF8.GetBytes(messageValue);
+        var hash = SHA256.HashData(payload);
+        return Convert.ToHexString(hash);
     }
 
     private async Task<bool> PublishToDlqAsync(ConsumeResult<string, string> consumeResult, CancellationToken cancellationToken)

@@ -1,5 +1,7 @@
 using Confluent.Kafka;
 using Microsoft.Extensions.Options;
+using NotificacionWorker.Application.Composition;
+using NotificacionWorker.Application.Idempotency;
 using NotificacionWorker.Configuration;
 using NotificacionWorker.Models;
 using NotificacionWorker.Services;
@@ -11,6 +13,8 @@ public class PushChannelStrategy : IChannelStrategy
 {
     private readonly ILogger<PushChannelStrategy> _logger;
     private readonly IProducer<string, string> _producer;
+    private readonly INotificationDataComposerResolver _dataComposerResolver;
+    private readonly IChannelDeliveryIdempotencyService _idempotencyService;
     private readonly IPushAppResolver _pushAppResolver;
     private readonly string _topic;
 
@@ -19,22 +23,43 @@ public class PushChannelStrategy : IChannelStrategy
     public PushChannelStrategy(
         ILogger<PushChannelStrategy> logger,
         IProducer<string, string> producer,
+        INotificationDataComposerResolver dataComposerResolver,
+        IChannelDeliveryIdempotencyService idempotencyService,
         IPushAppResolver pushAppResolver,
         IOptions<KafkaSettings> kafkaSettings)
     {
         _logger = logger;
         _producer = producer;
+        _dataComposerResolver = dataComposerResolver;
+        _idempotencyService = idempotencyService;
         _pushAppResolver = pushAppResolver;
         _topic = kafkaSettings.Value.Topics.NotificationPush;
     }
 
     public async Task ProcessAndPublishAsync(NotificationRequest request, CancellationToken cancellationToken = default)
     {
+        string? lockToken = null;
         try
         {
+            var lease = await _idempotencyService.TryAcquireAsync(request.EventId, ChannelName, cancellationToken);
+
+            if (lease.Result == ChannelDeliveryAcquireResult.AlreadyProcessed)
+            {
+                _logger.LogInformation("[{Channel}] EventId {EventId} ya fue procesado. Se omitirá publicación duplicada.", ChannelName, request.EventId);
+                return;
+            }
+
+            if (lease.Result == ChannelDeliveryAcquireResult.InProgress)
+            {
+                _logger.LogWarning("[{Channel}] EventId {EventId} está en procesamiento por otra instancia. Se omite este intento.", ChannelName, request.EventId);
+                return;
+            }
+
+            lockToken = lease.LockToken;
+            var composedData = await _dataComposerResolver.ComposeAsync(request, ChannelName, cancellationToken);
             var appResolution = _pushAppResolver.ResolveForEvent(request.EventType);
 
-            var metadata = new Dictionary<string, object>(request.Data, StringComparer.OrdinalIgnoreCase)
+            var metadata = new Dictionary<string, object>(composedData, StringComparer.OrdinalIgnoreCase)
             {
                 ["pushAppId"] = appResolution.AppId,
                 ["pushCredentialsSource"] = appResolution.CredentialsSource,
@@ -44,9 +69,10 @@ public class PushChannelStrategy : IChannelStrategy
 
             var notification = new NotificationMessage
             {
+                EventId = request.EventId,
                 EventType = request.EventType,
                 Subject = $"[Push] {request.EventType}",
-                Body = JsonSerializer.Serialize(request.Data),
+                Body = JsonSerializer.Serialize(composedData),
                 Metadata = metadata,
                 Timestamp = request.Timestamp
             };
@@ -57,10 +83,12 @@ public class PushChannelStrategy : IChannelStrategy
                 _topic,
                 new Message<string, string>
                 {
-                    Key = notification.EventType,
+                    Key = notification.EventId,
                     Value = jsonMessage
                 },
                 cancellationToken);
+
+            await _idempotencyService.MarkSucceededAsync(request.EventId, ChannelName, lockToken, cancellationToken);
 
             _logger.LogInformation("[{Channel}] Mensaje publicado a {Topic}: {Status}",
                 ChannelName, _topic, result.Status);
@@ -68,8 +96,9 @@ public class PushChannelStrategy : IChannelStrategy
             _logger.LogInformation("[{Channel}] Evento {EventType} resuelto a Firebase AppId {AppId} ({Source})",
                 ChannelName, request.EventType, appResolution.AppId, appResolution.CredentialsSource);
         }
-        catch (ProduceException<string, string> ex)
+        catch (Exception ex)
         {
+            await _idempotencyService.MarkFailedAsync(request.EventId, ChannelName, lockToken, cancellationToken);
             _logger.LogError(ex, "[{Channel}] Error publicando mensaje a {Topic}", ChannelName, _topic);
             throw;
         }
